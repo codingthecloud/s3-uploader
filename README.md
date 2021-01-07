@@ -11,6 +11,11 @@ aws_secret_access_key=your_key
 region = your_region
 ```
 
+Example:
+```
+python ./s3uploader.py -d /Users/Mark/photo-folder/
+```
+
 ## Uploading files to AWS S3
 S3Uploader was designed to upload large files into AWS S3.
 The tool performs a multipart upload if the total size is greater than the chunk size.
