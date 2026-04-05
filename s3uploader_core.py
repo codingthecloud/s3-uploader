@@ -277,6 +277,54 @@ class S3Uploader:
             LifecycleConfiguration=lifecycle_conf
         )
 
+    def get_lifecycle_policy(self, bucket_name):
+        try:
+            return self.s3_cli.get_bucket_lifecycle_configuration(Bucket=bucket_name)
+        except botocore.exceptions.ClientError as err:
+            error_code = err.response.get("Error", {}).get("Code")
+            if error_code in {"NoSuchLifecycleConfiguration", "NoSuchBucket"}:
+                return None
+            raise
+
+    def describe_lifecycle_policy(self, bucket_name):
+        config = self.get_lifecycle_policy(bucket_name)
+        if not config or not config.get('Rules'):
+            return "No lifecycle policy configured for this bucket."
+
+        lines = []
+        for index, rule in enumerate(config['Rules'], start=1):
+            status = rule.get('Status', 'Unknown')
+            filter_conf = rule.get('Filter', {})
+            prefix = filter_conf.get('Prefix', '/') or '/'
+            lines.append(f"Rule {index}: {rule.get('ID', 'Unnamed rule')}")
+            lines.append(f"  Status: {status}")
+            lines.append(f"  Prefix: {prefix}")
+
+            transitions = rule.get('Transitions', [])
+            if transitions:
+                transition_parts = []
+                for transition in transitions:
+                    days = transition.get('Days')
+                    storage_class = transition.get('StorageClass', 'unknown')
+                    if days is not None:
+                        transition_parts.append(f"{storage_class} after {days} day(s)")
+                    else:
+                        transition_parts.append(storage_class)
+                lines.append(f"  Transitions: {', '.join(transition_parts)}")
+
+            expiration = rule.get('Expiration', {})
+            expiration_days = expiration.get('Days')
+            if expiration_days is not None:
+                lines.append(f"  Expiration: after {expiration_days} day(s)")
+
+            abort_conf = rule.get('AbortIncompleteMultipartUpload', {})
+            abort_days = abort_conf.get('DaysAfterInitiation')
+            if abort_days is not None:
+                lines.append(
+                    f"  Abort incomplete multipart uploads after {abort_days} day(s)"
+                )
+        return "\n\n".join(lines)
+
     def list_buckets(self):
         response = self.s3_cli.list_buckets()
         return sorted(bucket['Name'] for bucket in response.get('Buckets', []))

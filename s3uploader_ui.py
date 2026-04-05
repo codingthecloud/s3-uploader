@@ -1,4 +1,5 @@
 import logging
+import os
 from pathlib import Path
 
 from s3uploader_core import S3Uploader
@@ -7,12 +8,15 @@ from s3uploader_core import S3UploaderSettings
 try:
     from PySide6.QtCore import QObject
     from PySide6.QtCore import QDir
+    from PySide6.QtCore import QModelIndex
     from PySide6.QtCore import QThread
     from PySide6.QtCore import Qt
     from PySide6.QtCore import Signal
+    from PySide6.QtGui import QPixmap
     from PySide6.QtWidgets import QApplication
     from PySide6.QtWidgets import QFileSystemModel
     from PySide6.QtWidgets import QFormLayout
+    from PySide6.QtWidgets import QGroupBox
     from PySide6.QtWidgets import QHBoxLayout
     from PySide6.QtWidgets import QInputDialog
     from PySide6.QtWidgets import QLabel
@@ -24,6 +28,7 @@ try:
     from PySide6.QtWidgets import QPushButton
     from PySide6.QtWidgets import QProgressBar
     from PySide6.QtWidgets import QSplitter
+    from PySide6.QtWidgets import QTabWidget
     from PySide6.QtWidgets import QTreeView
     from PySide6.QtWidgets import QTreeWidget
     from PySide6.QtWidgets import QTreeWidgetItem
@@ -70,6 +75,44 @@ class UploadWorker(QObject):
 
 
 class S3UploaderWindow(QMainWindow):
+    IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"}
+    AWS_REGIONS = [
+        "af-south-1",
+        "ap-east-1",
+        "ap-east-2",
+        "ap-northeast-1",
+        "ap-northeast-2",
+        "ap-northeast-3",
+        "ap-south-1",
+        "ap-south-2",
+        "ap-southeast-1",
+        "ap-southeast-2",
+        "ap-southeast-3",
+        "ap-southeast-4",
+        "ap-southeast-5",
+        "ap-southeast-6",
+        "ap-southeast-7",
+        "ca-central-1",
+        "ca-west-1",
+        "eu-central-1",
+        "eu-central-2",
+        "eu-north-1",
+        "eu-south-1",
+        "eu-south-2",
+        "eu-west-1",
+        "eu-west-2",
+        "eu-west-3",
+        "il-central-1",
+        "me-central-1",
+        "me-south-1",
+        "mx-central-1",
+        "sa-east-1",
+        "us-east-1",
+        "us-east-2",
+        "us-west-1",
+        "us-west-2",
+    ]
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("S3 Uploader")
@@ -79,9 +122,10 @@ class S3UploaderWindow(QMainWindow):
         self.upload_thread = None
         self.upload_worker = None
         self.queued_paths = []
+        self.preview_image_path = None
         self._build_ui()
         self._connect_signals()
-        self._set_local_root(QDir.homePath())
+        self._set_default_local_root()
 
     def _build_ui(self):
         central_widget = QWidget()
@@ -91,6 +135,8 @@ class S3UploaderWindow(QMainWindow):
         settings_layout = QHBoxLayout()
         root_layout.addLayout(settings_layout)
 
+        aws_group = QGroupBox("AWS Configuration")
+        aws_group_layout = QVBoxLayout(aws_group)
         credentials_layout = QFormLayout()
         self.access_key_input = QLineEdit()
         self.access_key_input.setEchoMode(QLineEdit.Password)
@@ -98,7 +144,10 @@ class S3UploaderWindow(QMainWindow):
         self.secret_key_input.setEchoMode(QLineEdit.Password)
         self.session_token_input = QLineEdit()
         self.session_token_input.setEchoMode(QLineEdit.Password)
-        self.region_input = QLineEdit("eu-west-1")
+        self.region_input = QComboBox()
+        self.region_input.setEditable(True)
+        self.region_input.addItems(self.AWS_REGIONS)
+        self.region_input.setCurrentText("eu-west-1")
         self.endpoint_input = QLineEdit()
         self.endpoint_input.setPlaceholderText("Optional for AWS; leave blank")
         self.profile_input = QLineEdit()
@@ -108,30 +157,61 @@ class S3UploaderWindow(QMainWindow):
         credentials_layout.addRow("Region", self.region_input)
         credentials_layout.addRow("Endpoint URL", self.endpoint_input)
         credentials_layout.addRow("Profile", self.profile_input)
-        settings_layout.addLayout(credentials_layout, 3)
+        aws_group_layout.addLayout(credentials_layout)
+        aws_actions_layout = QHBoxLayout()
+        self.connect_button = QPushButton("Connect to AWS")
+        self.connect_button.setMinimumHeight(42)
+        self.connect_button.setStyleSheet("font-weight: bold;")
+        aws_actions_layout.addWidget(self.connect_button)
+        aws_group_layout.addLayout(aws_actions_layout)
+        settings_layout.addWidget(aws_group, 2)
 
+        transfer_group = QGroupBox("Transfer Settings")
+        transfer_group_layout = QVBoxLayout(transfer_group)
         bucket_layout = QFormLayout()
         self.bucket_combo = QComboBox()
         self.bucket_combo.setEditable(True)
         self.prefix_input = QLineEdit()
-        self.chunk_size_input = QLineEdit("64")
-        self.connect_button = QPushButton("Connect")
+        self.chunk_size_input = QComboBox()
+        self.chunk_size_input.setEditable(True)
+        self.chunk_size_input.addItems(["5", "8", "16", "32", "64", "128", "256"])
+        self.chunk_size_input.setCurrentText("64")
         self.refresh_buckets_button = QPushButton("Refresh Buckets")
         self.create_bucket_button = QPushButton("Create Bucket")
         self.refresh_s3_button = QPushButton("Refresh S3")
         bucket_layout.addRow("Bucket", self.bucket_combo)
         bucket_layout.addRow("Target Prefix", self.prefix_input)
         bucket_layout.addRow("Chunk Size MB", self.chunk_size_input)
-        bucket_layout.addRow(self.connect_button, self.refresh_buckets_button)
-        bucket_layout.addRow(self.create_bucket_button, self.refresh_s3_button)
-        settings_layout.addLayout(bucket_layout, 2)
+        transfer_group_layout.addLayout(bucket_layout)
+        transfer_actions_layout = QHBoxLayout()
+        transfer_actions_layout.addWidget(self.refresh_buckets_button)
+        transfer_actions_layout.addWidget(self.create_bucket_button)
+        transfer_actions_layout.addWidget(self.refresh_s3_button)
+        transfer_group_layout.addLayout(transfer_actions_layout)
+        settings_layout.addWidget(transfer_group, 3)
 
         splitter = QSplitter(Qt.Horizontal)
         root_layout.addWidget(splitter, 1)
 
         local_panel = QWidget()
-        local_layout = QVBoxLayout(local_panel)
-        local_layout.addWidget(QLabel("Local Files"))
+        local_layout = QHBoxLayout(local_panel)
+
+        local_browser_panel = QWidget()
+        local_browser_layout = QVBoxLayout(local_browser_panel)
+        local_header_layout = QHBoxLayout()
+        local_header_layout.addWidget(QLabel("Local Files"))
+        self.local_home_button = QPushButton("⌂")
+        self.local_home_button.setToolTip("Go to home folder")
+        self.local_home_button.setMaximumWidth(44)
+        self.local_home_button.setMinimumHeight(28)
+        local_header_layout.addWidget(self.local_home_button)
+        self.local_desktop_button = QPushButton("🖥")
+        self.local_desktop_button.setToolTip("Go to desktop folder")
+        self.local_desktop_button.setMaximumWidth(44)
+        self.local_desktop_button.setMinimumHeight(28)
+        local_header_layout.addWidget(self.local_desktop_button)
+        local_header_layout.addStretch(1)
+        local_browser_layout.addLayout(local_header_layout)
         self.local_model = QFileSystemModel(self)
         self.local_model.setRootPath(QDir.rootPath())
         self.local_model.setFilter(QDir.AllDirs | QDir.Files | QDir.NoDotAndDotDot)
@@ -141,31 +221,63 @@ class S3UploaderWindow(QMainWindow):
         self.local_tree.setSortingEnabled(True)
         for column in range(1, 4):
             self.local_tree.hideColumn(column)
-        local_layout.addWidget(self.local_tree, 1)
-        queue_button_layout = QHBoxLayout()
-        self.add_to_queue_button = QPushButton("Add To Queue")
-        self.remove_from_queue_button = QPushButton("Remove From Queue")
-        self.clear_queue_button = QPushButton("Clear Queue")
-        queue_button_layout.addWidget(self.add_to_queue_button)
-        queue_button_layout.addWidget(self.remove_from_queue_button)
-        queue_button_layout.addWidget(self.clear_queue_button)
-        local_layout.addLayout(queue_button_layout)
-        queue_header_layout = QHBoxLayout()
-        queue_header_layout.addWidget(QLabel("Transfer Queue"))
-        self.upload_button = QPushButton("Start Transfer")
-        self.upload_button.setMinimumHeight(44)
-        queue_header_layout.addWidget(self.upload_button)
-        local_layout.addLayout(queue_header_layout)
+        local_browser_layout.addWidget(self.local_tree, 1)
+
+        queue_actions_panel = QWidget()
+        queue_actions_layout = QVBoxLayout(queue_actions_panel)
+        queue_actions_layout.addStretch(1)
+        self.add_to_queue_button = QPushButton("+")
+        self.add_to_queue_button.setToolTip("Add selected local files or folders to the queue")
+        self.remove_from_queue_button = QPushButton("-")
+        self.remove_from_queue_button.setToolTip("Remove selected items from the queue")
+        self.clear_queue_button = QPushButton("×")
+        self.clear_queue_button.setToolTip("Clear the transfer queue")
+        for button in (self.add_to_queue_button, self.remove_from_queue_button, self.clear_queue_button):
+            button.setMinimumWidth(56)
+            button.setMaximumWidth(64)
+            button.setMinimumHeight(42)
+            button.setStyleSheet("font-size: 18px; font-weight: bold;")
+        queue_actions_layout.addWidget(self.add_to_queue_button)
+        queue_actions_layout.addWidget(self.remove_from_queue_button)
+        queue_actions_layout.addWidget(self.clear_queue_button)
+        queue_actions_layout.addStretch(1)
+
+        queue_panel = QWidget()
+        queue_layout = QVBoxLayout(queue_panel)
+        queue_layout.addWidget(QLabel("Transfer Queue"))
         self.queue_list = QListWidget()
         self.queue_list.setSelectionMode(QListWidget.ExtendedSelection)
-        local_layout.addWidget(self.queue_list, 1)
+        queue_layout.addWidget(self.queue_list, 1)
+        self.upload_button = QPushButton("Start Transfer")
+        self.upload_button.setMinimumHeight(56)
+        self.upload_button.setStyleSheet("font-weight: bold;")
+        queue_layout.addWidget(self.upload_button)
+
+        local_layout.addWidget(local_browser_panel, 5)
+        local_layout.addWidget(queue_actions_panel, 1)
+        local_layout.addWidget(queue_panel, 3)
+
         splitter.addWidget(local_panel)
 
         s3_panel = QWidget()
         s3_layout = QVBoxLayout(s3_panel)
-        s3_layout.addWidget(QLabel("S3 Browser"))
+        s3_layout.addWidget(QLabel("S3"))
+        self.s3_tabs = QTabWidget()
+        s3_layout.addWidget(self.s3_tabs, 1)
+
+        browser_tab = QWidget()
+        browser_layout = QVBoxLayout(browser_tab)
+        current_path_layout = QHBoxLayout()
+        self.s3_up_button = QPushButton("↑")
+        self.s3_up_button.setToolTip("Up one level")
+        self.s3_up_button.setMaximumWidth(48)
+        self.s3_up_button.setMinimumHeight(32)
+        self.s3_up_button.setStyleSheet("font-size: 18px; font-weight: bold;")
+        current_path_layout.addWidget(self.s3_up_button)
         self.current_path_label = QLabel("Current prefix: /")
-        s3_layout.addWidget(self.current_path_label)
+        current_path_layout.addWidget(self.current_path_label)
+        current_path_layout.addStretch(1)
+        browser_layout.addLayout(current_path_layout)
         s3_actions_layout = QHBoxLayout()
         self.create_folder_button = QPushButton("Create Folder")
         self.download_object_button = QPushButton("Download Object")
@@ -178,15 +290,23 @@ class S3UploaderWindow(QMainWindow):
         s3_actions_layout.addWidget(self.download_object_button)
         s3_actions_layout.addWidget(self.delete_object_button)
         s3_actions_layout.addWidget(self.delete_folder_button)
-        s3_layout.addLayout(s3_actions_layout)
+        browser_layout.addLayout(s3_actions_layout)
         self.s3_tree = QTreeWidget()
         self.s3_tree.setColumnCount(3)
         self.s3_tree.setHeaderLabels(["Name", "Type", "Size"])
-        s3_layout.addWidget(self.s3_tree, 1)
-        self.s3_up_button = QPushButton("Up One Level")
-        s3_layout.addWidget(self.s3_up_button)
+        browser_layout.addWidget(self.s3_tree, 1)
+        self.s3_tabs.addTab(browser_tab, "S3 Browser")
+
+        lifecycle_tab = QWidget()
+        lifecycle_layout = QVBoxLayout(lifecycle_tab)
+        self.lifecycle_output = QTextEdit()
+        self.lifecycle_output.setReadOnly(True)
+        self.lifecycle_output.setPlaceholderText("Select a bucket to view lifecycle policies.")
+        lifecycle_layout.addWidget(self.lifecycle_output, 1)
+        self.s3_tabs.addTab(lifecycle_tab, "Lifecycle Policies")
+
         splitter.addWidget(s3_panel)
-        splitter.setSizes([700, 700])
+        splitter.setSizes([560, 840])
 
         action_layout = QHBoxLayout()
         root_layout.addLayout(action_layout)
@@ -199,10 +319,30 @@ class S3UploaderWindow(QMainWindow):
         action_layout.addWidget(self.status_label, 1)
         action_layout.addWidget(self.progress_bar, 1)
 
-        root_layout.addWidget(QLabel("Logs"))
+        bottom_splitter = QSplitter(Qt.Horizontal)
+        root_layout.addWidget(bottom_splitter, 1)
+
+        preview_panel = QWidget()
+        preview_layout = QVBoxLayout(preview_panel)
+        preview_layout.addWidget(QLabel("Image Preview"))
+        self.preview_caption = QLabel("Select a local image to preview.")
+        self.preview_caption.setWordWrap(True)
+        preview_layout.addWidget(self.preview_caption)
+        self.preview_image = QLabel("No image selected")
+        self.preview_image.setAlignment(Qt.AlignCenter)
+        self.preview_image.setMinimumHeight(220)
+        self.preview_image.setStyleSheet("border: 1px solid #555; color: #777;")
+        preview_layout.addWidget(self.preview_image, 1)
+        bottom_splitter.addWidget(preview_panel)
+
+        logs_panel = QWidget()
+        logs_layout = QVBoxLayout(logs_panel)
+        logs_layout.addWidget(QLabel("Logs"))
         self.log_output = QTextEdit()
         self.log_output.setReadOnly(True)
-        root_layout.addWidget(self.log_output, 1)
+        logs_layout.addWidget(self.log_output, 1)
+        bottom_splitter.addWidget(logs_panel)
+        bottom_splitter.setSizes([320, 880])
 
     def _connect_signals(self):
         self.connect_button.clicked.connect(self.connect_to_s3)
@@ -217,24 +357,44 @@ class S3UploaderWindow(QMainWindow):
         self.s3_up_button.clicked.connect(self.navigate_up)
         self.s3_tree.itemDoubleClicked.connect(self.open_s3_item)
         self.s3_tree.itemSelectionChanged.connect(self.update_s3_action_buttons)
+        self.local_home_button.clicked.connect(lambda: self._set_local_root(QDir.homePath()))
+        self.local_desktop_button.clicked.connect(self.go_to_desktop_folder)
         self.add_to_queue_button.clicked.connect(self.add_selected_to_queue)
         self.remove_from_queue_button.clicked.connect(self.remove_selected_from_queue)
         self.clear_queue_button.clicked.connect(self.clear_queue)
         self.upload_button.clicked.connect(self.upload_selected)
+        self.local_tree.selectionModel().selectionChanged.connect(self.update_local_preview)
 
     def _set_local_root(self, path):
         root_index = self.local_model.index(path)
         if root_index.isValid():
             self.local_tree.setRootIndex(root_index)
 
+    def _set_default_local_root(self):
+        if os.name == "nt":
+            self.local_tree.setRootIndex(QModelIndex())
+            return
+        self._set_local_root(QDir.homePath())
+
+    def go_to_desktop_folder(self):
+        desktop_path = str(Path.home() / "Desktop")
+        if Path(desktop_path).exists():
+            self._set_local_root(desktop_path)
+            return
+        self.show_error("Desktop folder was not found.")
+
+    def resizeEvent(self, event):  # pragma: no cover - UI runtime path
+        super().resizeEvent(event)
+        self._render_preview_pixmap()
+
     def _settings_from_form(self, bucket_name=None):
-        chunk_size = int(self.chunk_size_input.text().strip() or S3UploaderSettings.DEFAULT_CHUNK_SIZE)
+        chunk_size = int(self.chunk_size_input.currentText().strip() or S3UploaderSettings.DEFAULT_CHUNK_SIZE)
         return S3UploaderSettings(
             bucket_name=bucket_name,
             s3_prefix=self.prefix_input.text().strip(),
             chunk_size_mb=chunk_size,
             endpoint_url=self.endpoint_input.text().strip() or None,
-            region_name=self.region_input.text().strip() or None,
+            region_name=self.region_input.currentText().strip() or None,
             aws_access_key_id=self.access_key_input.text().strip() or None,
             aws_secret_access_key=self.secret_key_input.text().strip() or None,
             aws_session_token=self.session_token_input.text().strip() or None,
@@ -296,9 +456,11 @@ class S3UploaderWindow(QMainWindow):
 
     def refresh_s3_browser(self):
         if not self.s3_service:
+            self.refresh_lifecycle_panel()
             return
         bucket_name = self.bucket_combo.currentText().strip()
         if not bucket_name:
+            self.refresh_lifecycle_panel()
             return
         try:
             listing = self.s3_service.list_prefix(bucket_name, self.current_prefix)
@@ -319,8 +481,25 @@ class S3UploaderWindow(QMainWindow):
                 item.setData(1, Qt.UserRole, 'file')
                 self.s3_tree.addTopLevelItem(item)
             self.update_s3_action_buttons()
+            self.refresh_lifecycle_panel()
         except Exception as exc:
             self.show_error(f"Unable to browse bucket: {exc}")
+
+    def refresh_lifecycle_panel(self):
+        if not self.s3_service:
+            self.lifecycle_output.setPlainText("Connect to S3 to view lifecycle policies.")
+            return
+        bucket_name = self.bucket_combo.currentText().strip()
+        if not bucket_name:
+            self.lifecycle_output.setPlainText("Select a bucket to view lifecycle policies.")
+            return
+        try:
+            summary = self.s3_service.describe_lifecycle_policy(bucket_name)
+            self.lifecycle_output.setPlainText(summary)
+        except Exception as exc:
+            self.lifecycle_output.setPlainText(
+                f"Unable to load lifecycle policies for {bucket_name}: {exc}"
+            )
 
     def update_s3_action_buttons(self):
         current_item = self.s3_tree.currentItem()
@@ -486,6 +665,50 @@ class S3UploaderWindow(QMainWindow):
                 continue
             filtered_paths.append(path)
         return [str(path) for path in filtered_paths]
+
+    def update_local_preview(self, *_args):
+        selected_paths = self._selected_local_paths()
+        if not selected_paths:
+            self.preview_image_path = None
+            self.preview_caption.setText("Select a local image to preview.")
+            self.preview_image.setPixmap(QPixmap())
+            self.preview_image.setText("No image selected")
+            return
+
+        selected_path = Path(selected_paths[0])
+        if not selected_path.is_file():
+            self.preview_image_path = None
+            self.preview_caption.setText(f"{selected_path.name} is a folder.")
+            self.preview_image.setPixmap(QPixmap())
+            self.preview_image.setText("Folder preview not available")
+            return
+
+        if selected_path.suffix.lower() not in self.IMAGE_EXTENSIONS:
+            self.preview_image_path = None
+            self.preview_caption.setText(f"{selected_path.name} is not a supported image format.")
+            self.preview_image.setPixmap(QPixmap())
+            self.preview_image.setText("No image preview available")
+            return
+
+        self.preview_image_path = selected_path
+        self.preview_caption.setText(selected_path.name)
+        self._render_preview_pixmap()
+
+    def _render_preview_pixmap(self):
+        if not self.preview_image_path:
+            return
+        pixmap = QPixmap(str(self.preview_image_path))
+        if pixmap.isNull():
+            self.preview_image.setPixmap(QPixmap())
+            self.preview_image.setText("Unable to load image preview")
+            return
+        scaled = pixmap.scaled(
+            self.preview_image.size(),
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation
+        )
+        self.preview_image.setText("")
+        self.preview_image.setPixmap(scaled)
 
     def add_selected_to_queue(self):
         selected_paths = self._selected_local_paths()
