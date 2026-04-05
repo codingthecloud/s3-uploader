@@ -7,6 +7,8 @@ Simple S3 transfer tool with two faces:
 
 The project is intentionally practical. It focuses on moving files reliably, handling multipart uploads, and giving a clearer desktop workflow for Windows users.
 
+![S3Uploader desktop UI](docs/s3-uploader-desktop-ui.png)
+
 ## What It Does
 
 - uploads files and folders to Amazon S3
