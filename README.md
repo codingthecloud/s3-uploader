@@ -6,6 +6,7 @@ Simple S3 transfer tool with two faces:
 - a desktop UI for browsing local files, browsing S3, and moving data without touching the terminal
 
 The project is intentionally practical. It focuses on moving files reliably, handling multipart uploads, and giving a clearer desktop workflow for Windows users.
+It supports Windows and Linux environments, with Windows as the primary packaged desktop target.
 
 ![S3Uploader desktop UI](docs/s3-uploader-desktop-ui.png)
 
@@ -92,6 +93,25 @@ This builds:
 
 ```text
 dist\S3Uploader.exe
+```
+
+## Linux
+
+Linux is supported for:
+
+- running the CLI
+- running the desktop UI from source
+- generating release bundles
+- local S3-compatible testing such as MinIO
+
+Install and run from source:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements-desktop.txt
+python s3uploader_ui.py
 ```
 
 ## Create A Clean Release Bundle
