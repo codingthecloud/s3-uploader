@@ -348,9 +348,11 @@ class S3Uploader:
         prefix = self.conf.prefix if prefix is None else prefix
         multiparts = {}
         paginator = self.s3_cli.get_paginator('list_multipart_uploads')
-        pages = paginator.paginate(Bucket=bucket_name, Prefix=prefix)
+        pages = paginator.paginate(Bucket=bucket_name)
         for page in pages:
             for item in page.get('Uploads', []):
+                if prefix and not item['Key'].startswith(prefix):
+                    continue
                 multiparts[item['Key']] = item['UploadId']
         return multiparts
 

@@ -195,6 +195,42 @@ python3 ./s3uploader.py test-bucket \
   --region us-east-1
 ```
 
+## Automated Testing
+
+The repository includes a MinIO-backed integration suite in
+`tests/test_minio_integration.py`.
+
+It currently covers:
+
+- recursive uploads and preserved paths
+- skip-on-existing behavior
+- `src_file` uploads
+- multipart resume
+- object download and delete
+- folder create and delete
+- bucket emptying rules before delete
+
+Run it locally:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements-test.txt
+
+docker run -d --name minio-s3-test -p 9000:9000 \
+  -e MINIO_ROOT_USER=minioadmin \
+  -e MINIO_ROOT_PASSWORD=minioadmin \
+  minio/minio:latest server /data
+
+MINIO_ENDPOINT_URL=http://127.0.0.1:9000 \
+MINIO_ACCESS_KEY=minioadmin \
+MINIO_SECRET_KEY=minioadmin \
+MINIO_REGION=us-east-1 \
+pytest -q tests/test_minio_integration.py
+```
+
+GitHub Actions runs the same suite on every push to `master` and on pull requests.
+
 ## Python API
 
 The upload and S3 browser logic lives in `s3uploader_core.py`.
